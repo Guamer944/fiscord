@@ -2,12 +2,8 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    
-    <!-- CHANGED: Title is now Fiscord -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Fiscord</title>
-    
-    <!-- CHANGED: Icon is now Shrek -->
     <link rel="shortcut icon" href="https://upload.wikimedia.org/wikipedia/en/4/4d/Shrek_%28character%29.png">
     
     <!-- Tailwind CSS -->
@@ -20,8 +16,11 @@
     <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     
-    <!-- Babel for JSX -->
+    <!-- Babel -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Jitsi Meet API -->
+    <script src='https://meet.element.io/libs/external_api.min.js'></script>
 
     <!-- Google Fonts -->
     <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
@@ -32,9 +31,9 @@
             background-color: #36393f;
             color: #dcddde;
             overflow: hidden;
+            -webkit-tap-highlight-color: transparent;
         }
         
-        /* Scrollbar */
         ::-webkit-scrollbar { width: 8px; height: 8px; }
         ::-webkit-scrollbar-track { background-color: #2e3338; border-radius: 4px; }
         ::-webkit-scrollbar-thumb { background-color: #202225; border-radius: 4px; }
@@ -48,20 +47,27 @@
         .message-actions { opacity: 0; transition: opacity 0.1s; }
         .message-hover:hover { background-color: #32353b; }
         
-        /* Interactive States */
         .channel-item { transition: all 0.1s; }
         .channel-item:hover { background-color: #35373c; color: #dcddde; }
         .channel-item.active { background-color: #393c43; color: white; }
 
-        .loader {
-            border: 4px solid #f3f3f3;
-            border-top: 4px solid #5865f2;
-            border-radius: 50%;
-            width: 30px;
-            height: 30px;
-            animation: spin 1s linear infinite;
-        }
+        .notification-badge { background-color: #ed4245; color: white; font-size: 10px; font-weight: bold; padding: 2px 6px; border-radius: 10px; margin-left: auto; }
+        .notification-dot { position: absolute; bottom: -2px; right: -2px; width: 14px; height: 14px; background-color: #ed4245; border: 3px solid #2f3136; border-radius: 50%; z-index: 20; }
+        .gift-link { color: #5865f2; text-decoration: underline; cursor: pointer; }
+        .loader { border: 4px solid #f3f3f3; border-top: 4px solid #5865f2; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* Call Animations */
+        .voice-avatar-pulse { box-shadow: 0 0 0 0 rgba(88, 101, 242, 0.7); animation: pulse-blurple 2s infinite; }
+        .incoming-call-pulse { box-shadow: 0 0 0 0 rgba(59, 165, 93, 0.7); animation: pulse-green-ring 1.5s infinite; }
+        @keyframes pulse-blurple { 0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(88, 101, 242, 0.7); } 70% { transform: scale(1); box-shadow: 0 0 0 20px rgba(88, 101, 242, 0); } 100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(88, 101, 242, 0); } }
+        @keyframes pulse-green-ring { 0% { box-shadow: 0 0 0 0 rgba(59, 165, 93, 0.7); } 70% { box-shadow: 0 0 0 30px rgba(59, 165, 93, 0); } 100% { box-shadow: 0 0 0 0 rgba(59, 165, 93, 0); } }
+
+        /* Jitsi Crop Logic */
+        #jitsi-wrapper { width: 100%; height: 100%; overflow: hidden; position: relative; background: black; }
+        #jitsi-hidden-container { width: 100%; height: 100%; position: absolute; top: 0; left: 0; }
+        /* Try to hide Jitsi watermark if possible via CSS injection */
+        iframe { border: none; }
     </style>
 </head>
 <body>
@@ -87,8 +93,8 @@
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : MANUAL_FIREBASE_CONFIG;
         const TENOR_API_KEY = "AIzaSyDncbwoeJZCAx4kN4x9dF-gxcmm6MjaiOs";
         const TENOR_CLIENT_KEY = "DiscordCloneApp";
+        const NOTIFICATION_SOUND_URL = "notification.mp3";
 
-        // --- INIT ---
         let app, auth, db;
         try {
             app = initializeApp(firebaseConfig);
@@ -134,51 +140,163 @@
             return isToday ? `Today at ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : `${date.toLocaleDateString()} at ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
         };
 
+        const notificationAudio = new Audio(NOTIFICATION_SOUND_URL);
+        notificationAudio.volume = 0.5;
+        
+        const ringtoneAudio = new Audio(NOTIFICATION_SOUND_URL);
+        ringtoneAudio.loop = true;
+
         // --- COMPONENTS ---
+
+        // --- INCOMING CALL SCREEN ---
+        function IncomingCallScreen({ caller, onAccept, onDecline }) {
+            useEffect(() => {
+                ringtoneAudio.currentTime = 0;
+                ringtoneAudio.play().catch(e => console.log("Ringtone blocked"));
+                return () => {
+                    ringtoneAudio.pause();
+                    ringtoneAudio.currentTime = 0;
+                }
+            }, []);
+
+            return (
+                <div className="fixed inset-0 bg-black/90 z-[200] flex flex-col items-center justify-center animate-fade-in">
+                    <div className="relative mb-8">
+                        <img 
+                            src={caller.photoURL || "https://cdn.discordapp.com/embed/avatars/0.png"} 
+                            className="w-40 h-40 rounded-full object-cover border-4 border-[#202225] incoming-call-pulse"
+                        />
+                    </div>
+                    <h2 className="text-3xl font-bold text-white mb-2">{caller.callerName}</h2>
+                    <p className="text-gray-400 mb-12 text-lg">Incoming Call...</p>
+                    
+                    <div className="flex space-x-12">
+                        <button onClick={onDecline} className="w-20 h-20 rounded-full bg-[#ed4245] hover:bg-[#c03537] flex items-center justify-center text-white shadow-2xl transition-transform hover:scale-110" title="Decline">
+                            <i className="fas fa-phone-slash text-3xl"></i>
+                        </button>
+                        <button onClick={onAccept} className="w-20 h-20 rounded-full bg-[#3ba55d] hover:bg-[#2d7d46] flex items-center justify-center text-white shadow-2xl transition-transform hover:scale-110 animate-bounce" title="Accept">
+                            <i className="fas fa-phone text-3xl"></i>
+                        </button>
+                    </div>
+                </div>
+            );
+        }
+
+        // --- CALL INTERFACE (FIXED PRE-JOIN) ---
+        function CallInterface({ channelId, displayName, userAvatar, isVideo, onLeave }) {
+            const [api, setApi] = useState(null);
+            const [muted, setMuted] = useState(false);
+            const [cameraOff, setCameraOff] = useState(!isVideo);
+
+            useEffect(() => {
+                const domain = 'meet.element.io';
+                const options = {
+                    roomName: `Fiscord_Call_${channelId}`,
+                    width: '100%',
+                    height: '100%',
+                    parentNode: document.querySelector('#jitsi-hidden-container'),
+                    userInfo: { displayName: displayName },
+                    configOverwrite: {
+                        // --- FORCE DISABLE PRE-JOIN PAGE ---
+                        prejoinPageEnabled: false,
+                        startWithAudioMuted: false,
+                        startWithVideoMuted: !isVideo,
+                        disableDeepLinking: true,
+                        disableInviteFunctions: true,
+                        doNotStoreRoom: true,
+                        requireDisplayName: false,
+                        toolbarButtons: [] // Hides all default buttons
+                    },
+                    interfaceConfigOverwrite: {
+                        // --- EXTRA PRE-JOIN SAFETY ---
+                        SHOW_JITSI_WATERMARK: false,
+                        SHOW_WATERMARK_FOR_GUESTS: false,
+                        TOOLBAR_BUTTONS: [],
+                        VIDEO_QUALITY_LABEL_DISABLED: true,
+                        SETTINGS_SECTIONS: [],
+                        MOBILE_APP_PROMO: false
+                    }
+                };
+                
+                const jitsiApi = new JitsiMeetExternalAPI(domain, options);
+                setApi(jitsiApi);
+                jitsiApi.executeCommand('setTileView', false);
+
+                jitsiApi.addEventListeners({
+                    videoConferenceLeft: () => { jitsiApi.dispose(); onLeave(); },
+                    // Auto-join when ready if it gets stuck
+                    readyToClose: () => { jitsiApi.dispose(); onLeave(); }
+                });
+
+                return () => jitsiApi.dispose();
+            }, []);
+
+            const toggleMute = () => { if(api) { api.executeCommand('toggleAudio'); setMuted(!muted); } };
+            const toggleCamera = () => { if(api) { api.executeCommand('toggleVideo'); setCameraOff(!cameraOff); } };
+            const hangUp = () => { if(api) api.dispose(); onLeave(); };
+            
+            const showVoiceUI = cameraOff;
+
+            return (
+                <div className="w-full h-full bg-[#000] relative flex flex-col items-center justify-center overflow-hidden">
+                    <div id="jitsi-wrapper" className={`${showVoiceUI ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
+                         <div id="jitsi-hidden-container"></div>
+                    </div>
+
+                    {showVoiceUI && (
+                        <div className="absolute inset-0 flex flex-col items-center justify-center z-10 bg-[#000]">
+                            <div className="relative mb-8">
+                                <img src={userAvatar || "https://cdn.discordapp.com/embed/avatars/0.png"} className={`w-32 h-32 rounded-full object-cover border-4 border-[#1e1f22] ${!muted ? 'voice-avatar-pulse' : ''}`} />
+                                {muted && <div className="absolute bottom-0 right-0 bg-red-500 w-10 h-10 rounded-full flex items-center justify-center border-4 border-[#1e1f22]"><i className="fas fa-microphone-slash text-white text-sm"></i></div>}
+                            </div>
+                            <h3 className="text-2xl font-bold text-white tracking-wide mb-1">{displayName}</h3>
+                            <div className="flex items-center space-x-2"><span className="w-2 h-2 bg-green-500 rounded-full"></span><p className="text-gray-400 text-sm font-semibold">Voice Connected</p></div>
+                        </div>
+                    )}
+                    
+                    <div className="absolute bottom-8 bg-[#2f3136] p-4 rounded-2xl flex items-center space-x-6 shadow-2xl border border-[#202225] z-50">
+                        <button onClick={toggleCamera} className={`w-14 h-14 rounded-full flex items-center justify-center transition-all transform hover:scale-105 ${cameraOff ? 'bg-white text-black' : 'bg-[#36393f] text-white hover:bg-gray-600'}`} title="Camera"><i className={`fas ${cameraOff ? 'fa-video-slash' : 'fa-video'} text-xl`}></i></button>
+                        <button onClick={toggleMute} className={`w-14 h-14 rounded-full flex items-center justify-center transition-all transform hover:scale-105 ${muted ? 'bg-white text-black' : 'bg-[#36393f] text-white hover:bg-gray-600'}`} title="Mute"><i className={`fas ${muted ? 'fa-microphone-slash' : 'fa-microphone'} text-xl`}></i></button>
+                        <button onClick={hangUp} className="w-16 h-14 rounded-full bg-[#ed4245] hover:bg-[#c03537] flex items-center justify-center text-white transition-all transform hover:scale-105" title="Disconnect"><i className="fas fa-phone-slash text-2xl"></i></button>
+                    </div>
+                </div>
+            );
+        }
+
+        // --- SECRET SCREEN ---
+        function SecretScreen({ onClose }) {
+            const [allMessages, setAllMessages] = useState([]);
+            const [loading, setLoading] = useState(true);
+            useEffect(() => {
+                const q = query(collection(db, "messages"), orderBy("createdAt", "desc"), limit(200));
+                const unsub = onSnapshot(q, (snapshot) => {
+                    setAllMessages(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+                    setLoading(false);
+                });
+                return () => unsub();
+            }, []);
+            return (
+                <div className="fixed inset-0 bg-black/90 z-[100] flex flex-col p-4 text-white font-mono">
+                    <div className="flex justify-between items-center border-b border-gray-700 pb-2 mb-2"><h2 className="text-red-500 font-bold text-xl">SERVER LOGS</h2><button onClick={onClose} className="px-4 py-1 bg-gray-700 hover:bg-gray-600 rounded">CLOSE</button></div>
+                    <div className="flex-1 overflow-y-auto space-y-2 text-xs custom-scrollbar">{loading ? <div className="text-center">Loading logs...</div> : allMessages.map(msg => (<div key={msg.id} className="border-b border-gray-800 pb-1"><span className="text-green-500">[{msg.createdAt?.toDate().toLocaleString()}]</span><span className="text-blue-400 font-bold"> {msg.displayName} </span><span className="text-gray-500">({msg.uid})</span><span className="text-white ml-2">{msg.text || "[IMAGE]"}</span></div>))}</div>
+                </div>
+            );
+        }
 
         function UserSettings({ user, currentUserData, onClose }) {
             const [name, setName] = useState(currentUserData.displayName || user.displayName || "");
             const [avatar, setAvatar] = useState(currentUserData.photoURL || user.photoURL || "");
             const [saving, setSaving] = useState(false);
             const fileRef = useRef(null);
-
-            const handleFileChange = async (e) => {
-                const file = e.target.files[0];
-                if(file) {
-                    const base64 = await compressImage(file, 256, 0.6);
-                    setAvatar(base64);
-                }
-            }
-
-            const handleSave = async () => {
-                setSaving(true);
-                try {
-                    if (name !== user.displayName) await updateProfile(auth.currentUser, { displayName: name });
-                    await setDoc(doc(db, "users", user.uid), { displayName: name, photoURL: avatar, uid: user.uid }, { merge: true });
-                    onClose();
-                } catch (e) { console.error(e); }
-                setSaving(false);
-            };
-
+            const handleFileChange = async (e) => { const file = e.target.files[0]; if(file) { const base64 = await compressImage(file, 256, 0.6); setAvatar(base64); } }
+            const handleSave = async () => { setSaving(true); try { if (name !== user.displayName) await updateProfile(auth.currentUser, { displayName: name }); await setDoc(doc(db, "users", user.uid), { displayName: name, photoURL: avatar, uid: user.uid }, { merge: true }); onClose(); } catch (e) { console.error(e); } setSaving(false); };
             return (
                 <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center">
                     <div className="bg-[#36393f] w-full max-w-md rounded-lg shadow-lg p-6 animate-fade-in">
                         <h2 className="text-2xl font-bold text-white mb-6">My Account</h2>
-                        <div className="flex justify-center mb-6">
-                            <div className="relative group cursor-pointer" onClick={() => fileRef.current.click()}>
-                                <img src={avatar || "https://cdn.discordapp.com/embed/avatars/0.png"} className="w-24 h-24 rounded-full border-4 border-[#202225] object-cover" />
-                                <div className="absolute inset-0 bg-black/50 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition"><span className="text-xs text-white font-bold">CHANGE</span></div>
-                                <input type="file" ref={fileRef} onChange={handleFileChange} className="hidden" accept="image/png, image/jpeg, image/webp" />
-                            </div>
-                        </div>
-                        <div className="mb-4">
-                            <label className="text-xs font-bold text-gray-400 uppercase">Username</label>
-                            <input className="w-full bg-[#202225] text-white p-2 rounded mt-1 focus:outline-none" value={name} onChange={e => setName(e.target.value)} />
-                        </div>
-                        <div className="flex justify-end space-x-2 mt-6">
-                            <button onClick={onClose} className="px-4 py-2 hover:underline text-white">Cancel</button>
-                            <button onClick={handleSave} disabled={saving} className="px-4 py-2 bg-[#5865f2] hover:bg-[#4752c4] text-white rounded">{saving ? "Saving..." : "Save Changes"}</button>
-                        </div>
+                        <div className="flex justify-center mb-6"><div className="relative group cursor-pointer" onClick={() => fileRef.current.click()}><img src={avatar || "https://cdn.discordapp.com/embed/avatars/0.png"} className="w-24 h-24 rounded-full border-4 border-[#202225] object-cover" /><div className="absolute inset-0 bg-black/50 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition"><span className="text-xs text-white font-bold">CHANGE</span></div><input type="file" ref={fileRef} onChange={handleFileChange} className="hidden" accept="image/png, image/jpeg, image/webp" /></div></div>
+                        <div className="mb-4"><label className="text-xs font-bold text-gray-400 uppercase">Username</label><input className="w-full bg-[#202225] text-white p-2 rounded mt-1 focus:outline-none" value={name} onChange={e => setName(e.target.value)} /></div>
+                        <div className="flex justify-end space-x-2 mt-6"><button onClick={onClose} className="px-4 py-2 hover:underline text-white">Cancel</button><button onClick={handleSave} disabled={saving} className="px-4 py-2 bg-[#5865f2] hover:bg-[#4752c4] text-white rounded">{saving ? "Saving..." : "Save Changes"}</button></div>
                     </div>
                 </div>
             );
@@ -189,8 +307,7 @@
                 <div className="absolute bottom-12 left-2 z-50 bg-[#1e1f22] p-2 rounded-lg shadow-2xl w-56 border border-[#202225]">
                     {Object.entries(STATUS_MAP).map(([key, {color, icon, label = key}]) => (
                         <div key={key} onClick={() => { onSelectStatus(key); onClose(); }} className="flex items-center p-2 rounded cursor-pointer hover:bg-[#393c43] capitalize text-gray-200">
-                            <div className={`w-3 h-3 ${color} rounded-full flex items-center justify-center mr-3 relative`}><i className={`${icon} text-[8px] text-[#1e1f22] absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2`}></i></div>
-                            {key}
+                            <div className={`w-3 h-3 ${color} rounded-full flex items-center justify-center mr-3 relative`}><i className={`${icon} text-[8px] text-[#1e1f22] absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2`}></i></div>{key}
                         </div>
                     ))}
                 </div>
@@ -200,27 +317,21 @@
         function GifPicker({ onSelect, close }) {
             const [gifs, setGifs] = useState([]);
             const [search, setSearch] = useState("");
-            
             useEffect(() => { fetchGifs(""); }, []);
-            
-            const fetchGifs = async (q) => {
-                const url = `https://tenor.googleapis.com/v2/${q ? 'search' : 'featured'}?key=${TENOR_API_KEY}&client_key=${TENOR_CLIENT_KEY}&limit=20${q ? '&q='+q : ''}`;
-                try {
-                    const res = await fetch(url);
-                    const data = await res.json();
-                    setGifs(data.results || []);
-                } catch (e) {}
-            };
-
+            const fetchGifs = async (q) => { const url = `https://tenor.googleapis.com/v2/${q ? 'search' : 'featured'}?key=${TENOR_API_KEY}&client_key=${TENOR_CLIENT_KEY}&limit=20${q ? '&q='+q : ''}`; try { const res = await fetch(url); const data = await res.json(); setGifs(data.results || []); } catch (e) {} };
             return (
                 <div className="absolute bottom-20 right-8 w-80 bg-[#2f3136] border border-[#202225] rounded-lg shadow-2xl z-50 flex flex-col h-96">
-                    <div className="p-3 bg-[#202225] rounded-t-lg">
-                        <input type="text" placeholder="Search Tenor..." className="w-full bg-[#40444b] text-white p-2 rounded text-sm focus:outline-none" 
-                            value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && fetchGifs(search)} autoFocus />
-                    </div>
-                    <div className="flex-1 overflow-y-auto p-2 grid grid-cols-2 gap-2 custom-scrollbar">
-                        {gifs.map(g => <img key={g.id} src={g.media_formats.tinygif.url} className="w-full h-auto rounded cursor-pointer object-cover" onClick={() => onSelect(g.media_formats.gif.url)} />)}
-                    </div>
+                    <div className="p-3 bg-[#202225] rounded-t-lg"><input type="text" placeholder="Search Tenor..." className="w-full bg-[#40444b] text-white p-2 rounded text-sm focus:outline-none" value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && fetchGifs(search)} autoFocus /></div>
+                    <div className="flex-1 overflow-y-auto p-2 grid grid-cols-2 gap-2 custom-scrollbar">{gifs.map(g => <img key={g.id} src={g.media_formats.tinygif.url} className="w-full h-auto rounded cursor-pointer object-cover" onClick={() => onSelect(g.media_formats.gif.url)} />)}</div>
+                </div>
+            );
+        }
+
+        function EmojiPicker({ onSelect, close }) {
+            const emojis = ["😀","😂","🤣","😍","🥺","😎","😭","😡","👍","👎","🎉","🔥","💀","💩","🤡","👀","💖","💔","🍆","🍑"];
+            return (
+                <div className="absolute bottom-16 right-16 w-64 bg-[#2f3136] border border-[#202225] rounded-lg shadow-2xl z-50 p-2 grid grid-cols-5 gap-2">
+                    {emojis.map(e => <button key={e} onClick={() => onSelect(e)} className="text-xl hover:bg-[#40444b] p-1 rounded">{e}</button>)}
                 </div>
             );
         }
@@ -231,21 +342,7 @@
             const [password, setPassword] = useState("");
             const [username, setUsername] = useState(""); 
             const [error, setError] = useState("");
-
-            const handleSubmit = async (e) => {
-                e.preventDefault();
-                try {
-                    if (isLogin) {
-                        await signInWithEmailAndPassword(auth, email, password);
-                    } else {
-                        const cred = await createUserWithEmailAndPassword(auth, email, password);
-                        const defaultPic = `https://cdn.discordapp.com/embed/avatars/${Math.floor(Math.random()*5)}.png`;
-                        await updateProfile(cred.user, { displayName: username, photoURL: defaultPic });
-                        await setDoc(doc(db, "users", cred.user.uid), { uid: cred.user.uid, displayName: username, photoURL: defaultPic, status: "online" });
-                    }
-                } catch (err) { setError(err.message); }
-            };
-
+            const handleSubmit = async (e) => { e.preventDefault(); try { if (isLogin) { await signInWithEmailAndPassword(auth, email, password); } else { const cred = await createUserWithEmailAndPassword(auth, email, password); const defaultPic = `https://cdn.discordapp.com/embed/avatars/${Math.floor(Math.random()*5)}.png`; await updateProfile(cred.user, { displayName: username, photoURL: defaultPic }); await setDoc(doc(db, "users", cred.user.uid), { uid: cred.user.uid, displayName: username, photoURL: defaultPic, status: "online", lastMsgAt: 0 }); } } catch (err) { setError(err.message); } };
             return (
                 <div className="flex items-center justify-center h-screen w-full bg-[url('https://wallpaperaccess.com/full/2650150.jpg')] bg-cover">
                     <div className="bg-[#36393f] p-8 rounded-lg shadow-2xl w-96">
@@ -269,282 +366,218 @@
             const [loading, setLoading] = useState(true);
             const [messages, setMessages] = useState([]);
             const [allUsers, setAllUsers] = useState([]);
-            
-            // Channel State: 'global' or a specific DM ID
             const [activeChannelId, setActiveChannelId] = useState('global');
-            
+            const [callType, setCallType] = useState(null);
+            const [incomingCall, setIncomingCall] = useState(null);
+
+            const activeChannelRef = useRef('global');
+            const [lastMsgTimes, setLastMsgTimes] = useState({});
+            const [unreadMap, setUnreadMap] = useState({});
+            const [showSecretScreen, setShowSecretScreen] = useState(false);
+
             const [newMessage, setNewMessage] = useState("");
             const [showGifPicker, setShowGifPicker] = useState(false);
+            const [showEmojiPicker, setShowEmojiPicker] = useState(false);
             const [showSettings, setShowSettings] = useState(false);
             const [showStatusSetter, setShowStatusSetter] = useState(false);
             const fileInputRef = useRef(null);
             const dummyEndRef = useRef(null);
+            const initialLoadRef = useRef(true);
 
-            // Auth
+            const keySequenceRef = useRef([]);
             useEffect(() => {
-                const unsub = onAuthStateChanged(auth, (u) => { setUser(u); setLoading(false); });
-                return () => unsub();
+                const handler = (e) => { const seq = keySequenceRef.current; seq.push(e.key); if (seq.length > 3) seq.shift(); if (seq.join(',') === 'ArrowUp,ArrowUp,ArrowDown') { setShowSecretScreen(prev => !prev); keySequenceRef.current = []; } };
+                window.addEventListener('keydown', handler); return () => window.removeEventListener('keydown', handler);
             }, []);
 
-            // Users
+            useEffect(() => { activeChannelRef.current = activeChannelId; setUnreadMap(prev => { const next = {...prev}; delete next[activeChannelId]; return next; }); setCallType(null); }, [activeChannelId]);
+            useEffect(() => { const unsub = onAuthStateChanged(auth, (u) => { setUser(u); setLoading(false); }); return () => unsub(); }, []);
+
             useEffect(() => {
-                if(!user) return;
-                const unsub = onSnapshot(collection(db, "users"), (snap) => setAllUsers(snap.docs.map(d => d.data())));
+                const unlockAudio = () => {
+                    if (Notification.permission !== "granted" && Notification.permission !== "denied") Notification.requestPermission();
+                    notificationAudio.play().then(() => { notificationAudio.pause(); notificationAudio.currentTime = 0; }).catch(e => {});
+                    document.removeEventListener('click', unlockAudio); document.removeEventListener('touchstart', unlockAudio);
+                };
+                document.addEventListener('click', unlockAudio); document.addEventListener('touchstart', unlockAudio);
+                return () => { document.removeEventListener('click', unlockAudio); document.removeEventListener('touchstart', unlockAudio); };
+            }, []);
+
+            useEffect(() => { if(!user) return; const unsub = onSnapshot(collection(db, "users"), (snap) => setAllUsers(snap.docs.map(d => d.data()))); return () => unsub(); }, [user]);
+
+            useEffect(() => {
+                if (!db || !user) return;
+                const q = query(collection(db, "calls"), where("receiverId", "==", user.uid), where("status", "==", "ringing"));
+                const unsub = onSnapshot(q, (snapshot) => {
+                    if (!snapshot.empty) { setIncomingCall({ id: snapshot.docs[0].id, ...snapshot.docs[0].data() }); } else { setIncomingCall(null); }
+                });
                 return () => unsub();
             }, [user]);
 
-            // Messages (Filtered by Channel)
             useEffect(() => {
                 if (!db || !user) return;
-                setMessages([]); // Clear on channel switch
-
-                let q;
-                if (activeChannelId === 'global') {
-                    // Backwards compatibility: fetch messages where channelId is 'global' OR missing
-                    q = query(collection(db, "messages"), orderBy("createdAt", "asc"), limit(100));
-                } else {
-                    // Strict filter for DMs
-                    q = query(collection(db, "messages"), where("channelId", "==", activeChannelId), orderBy("createdAt", "asc"), limit(100));
-                }
-
+                const q = query(collection(db, "messages"), orderBy("createdAt", "desc"), limit(1));
                 const unsub = onSnapshot(q, (snapshot) => {
-                    const msgs = snapshot.docs.map(doc => ({id: doc.id, ...doc.data()}));
-                    // Manual filter for old messages if in global
-                    const filtered = activeChannelId === 'global' 
-                        ? msgs.filter(m => !m.channelId || m.channelId === 'global')
-                        : msgs;
-                    setMessages(filtered);
+                    if (snapshot.empty) return;
+                    const msg = snapshot.docs[0].data();
+                    if (initialLoadRef.current) { initialLoadRef.current = false; return; }
+                    const msgTime = msg.createdAt ? msg.createdAt.toMillis() : Date.now();
+                    const channel = msg.channelId || 'global';
+                    setLastMsgTimes(prev => ({...prev, [channel]: msgTime}));
+                    if (msg.uid !== user.uid) {
+                        if (channel !== activeChannelRef.current) {
+                            setUnreadMap(prev => ({...prev, [channel]: true}));
+                            notificationAudio.currentTime = 0; notificationAudio.play().catch(e => {});
+                            if (Notification.permission === "granted" && document.hidden) new Notification(`New message from ${msg.displayName}`, { body: msg.text || "Sent an image" });
+                        }
+                    }
                 });
+                return () => unsub();
+            }, [user]); 
+
+            useEffect(() => {
+                if (!db || !user) return;
+                setMessages([]); 
+                let q = activeChannelId === 'global' ? query(collection(db, "messages"), orderBy("createdAt", "asc"), limit(500)) : query(collection(db, "messages"), where("channelId", "==", activeChannelId), orderBy("createdAt", "asc"), limit(500));
+                const unsub = onSnapshot(q, (snapshot) => { setMessages(snapshot.docs.map(doc => ({id: doc.id, ...doc.data()}))); });
                 return () => unsub();
             }, [user, activeChannelId]);
 
             useEffect(() => { dummyEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
             const currentUserData = allUsers.find(u => u.uid === user?.uid) || { status: 'online' };
-            
-            // Filter out ghost users
-            const otherUsers = allUsers.filter(u => 
-                u.uid !== user?.uid && 
-                u.displayName && 
-                u.displayName.trim() !== ""
-            );
+            const getDmId = (otherUid) => { const uids = [user.uid, otherUid].sort(); return `${uids[0]}_${uids[1]}`; };
 
-            // --- Logic to get unique DM ID ---
-            const getDmId = (otherUid) => {
-                const uids = [user.uid, otherUid].sort();
-                return `${uids[0]}_${uids[1]}`;
+            let otherUsers = allUsers.filter(u => u.uid !== user?.uid && u.displayName && u.displayName.trim() !== "");
+            otherUsers.sort((a, b) => {
+                const idA = getDmId(a.uid); const idB = getDmId(b.uid);
+                const unreadA = unreadMap[idA] ? 1 : 0; const unreadB = unreadMap[idB] ? 1 : 0;
+                if (unreadA !== unreadB) return unreadB - unreadA;
+                const timeA = lastMsgTimes[idA] || 0; const timeB = lastMsgTimes[idB] || 0;
+                if (timeB !== timeA) return timeB - timeA;
+                return a.displayName.localeCompare(b.displayName);
+            });
+
+            const startCall = async (type) => {
+                if (activeChannelId === 'global') { alert("You can only call in DMs."); return; }
+                const receiverId = activeChannelId.replace(user.uid, '').replace('_', '');
+                await addDoc(collection(db, "calls"), { callerId: user.uid, receiverId: receiverId, callerName: currentUserData.displayName || user.displayName, photoURL: currentUserData.photoURL || user.photoURL, channelId: activeChannelId, status: 'ringing', createdAt: serverTimestamp() });
+                setCallType(type);
+            };
+
+            const acceptCall = async () => {
+                if (!incomingCall) return;
+                await deleteDoc(doc(db, "calls", incomingCall.id));
+                setActiveChannelId(incomingCall.channelId);
+                setCallType('video');
+                setIncomingCall(null);
+            };
+
+            const declineCall = async () => {
+                if (!incomingCall) return;
+                await deleteDoc(doc(db, "calls", incomingCall.id));
+                setIncomingCall(null);
+            };
+
+            const handleHangup = async () => {
+                setCallType(null);
+                const q = query(collection(db, "calls"), where("callerId", "==", user.uid), where("status", "==", "ringing"));
+                const snap = await getDocs(q); snap.forEach(d => deleteDoc(doc(db, "calls", d.id)));
             };
 
             const sendMessage = async (e, imgUrl = null) => {
                 if(e) e.preventDefault();
-                
-                // --- CLEAR COMMAND ---
-                if (newMessage === "/clear") {
-                    if (!confirm("Are you sure you want to delete all messages in this channel?")) return;
-                    let q;
-                    if (activeChannelId === 'global') {
-                        q = query(collection(db, "messages"), orderBy("createdAt", "asc")); 
-                    } else {
-                        q = query(collection(db, "messages"), where("channelId", "==", activeChannelId));
-                    }
-                    const snapshot = await getDocs(q);
-                    snapshot.forEach((d) => { deleteDoc(doc(db, "messages", d.id)); });
-                    setNewMessage("");
-                    return;
-                }
-
+                if (newMessage === "/clear") { if (!confirm("Delete all?")) return; let q = activeChannelId === 'global' ? query(collection(db, "messages")) : query(collection(db, "messages"), where("channelId", "==", activeChannelId)); const snapshot = await getDocs(q); snapshot.forEach((d) => deleteDoc(doc(db, "messages", d.id))); setNewMessage(""); return; }
                 if((!newMessage.trim() && !imgUrl) || !user) return;
-
-                const payload = {
-                    text: newMessage,
-                    imageUrl: imgUrl,
-                    createdAt: serverTimestamp(),
-                    uid: user.uid,
-                    displayName: currentUserData.displayName || user.displayName,
-                    photoURL: currentUserData.photoURL || user.photoURL,
-                    channelId: activeChannelId
-                };
-                
-                setNewMessage("");
-                await addDoc(collection(db, "messages"), payload);
+                const payload = { text: newMessage, imageUrl: imgUrl, createdAt: serverTimestamp(), uid: user.uid, displayName: currentUserData.displayName || user.displayName, photoURL: currentUserData.photoURL || user.photoURL, channelId: activeChannelId };
+                setNewMessage(""); setLastMsgTimes(prev => ({...prev, [activeChannelId]: Date.now()})); await addDoc(collection(db, "messages"), payload);
             };
 
-            const handleImageUpload = async (e) => {
-                const file = e.target.files[0];
-                if(file) sendMessage(null, await compressImage(file));
-            };
-
+            const sendGift = () => { const codes = ["W8sJ4z9K","A2dF5g7H","P9lO2i3U","M5nB6v8C","X1zQ2w3E"]; const randomCode = codes[Math.floor(Math.random() * codes.length)]; const giftLink = `https://discord.gift/${randomCode}${Math.random().toString(36).substring(7)}`; setNewMessage(giftLink); };
+            const handleImageUpload = async (e) => { const file = e.target.files[0]; if(file) sendMessage(null, await compressImage(file)); };
             const updateStatus = async (s) => setDoc(doc(db, "users", user.uid), { status: s }, { merge: true });
 
             if (loading) return <div className="h-screen bg-[#36393f] flex items-center justify-center"><div className="loader"></div></div>;
             if (!user) return <AuthScreen />;
 
-            // Get Active Channel Name
-            let channelName = "General";
-            let channelIcon = "fas fa-hashtag";
-            
-            if (activeChannelId !== 'global') {
-                // Find the other user in this DM
-                const parts = activeChannelId.split('_');
-                const otherId = parts.find(id => id !== user.uid);
-                const dmUser = allUsers.find(u => u.uid === otherId);
-                if (dmUser) {
-                    channelName = dmUser.displayName;
-                    channelIcon = "fas fa-at";
-                }
-            }
+            let channelName = "General"; let channelIcon = "fas fa-hashtag";
+            if (activeChannelId !== 'global') { const parts = activeChannelId.split('_'); const otherId = parts.find(id => id !== user.uid); const dmUser = allUsers.find(u => u.uid === otherId); if (dmUser) { channelName = dmUser.displayName; channelIcon = "fas fa-at"; } }
 
             return (
-                <div className="flex h-screen w-full text-white font-sans overflow-hidden">
+                <div className="flex h-screen w-full text-white font-sans overflow-hidden relative">
+                    {incomingCall && <IncomingCallScreen caller={incomingCall} onAccept={acceptCall} onDecline={declineCall} />}
+                    {showSecretScreen && <SecretScreen onClose={() => setShowSecretScreen(false)} />}
                     {showSettings && <UserSettings user={user} currentUserData={currentUserData} onClose={() => setShowSettings(false)} />}
                     
-                    {/* SIDEBAR */}
                     <div className="w-64 discord-sidebar flex flex-col border-r border-[#202225] shrink-0">
-                        {/* Search Bar / Header */}
-                        <div className="h-12 shadow-sm flex items-center px-3 border-b border-[#202225]">
-                            <button className="w-full bg-[#202225] text-left text-xs px-2 py-1.5 rounded text-gray-400 hover:text-white transition">
-                                Find or start a conversation
-                            </button>
-                        </div>
-                        
+                        <div className="h-12 shadow-sm flex items-center px-3 border-b border-[#202225]"><button className="w-full bg-[#202225] text-left text-xs px-2 py-1.5 rounded text-gray-400 hover:text-white transition">Find or start a conversation</button></div>
                         <div className="flex-1 overflow-y-auto pt-3 px-2 custom-scrollbar">
-                            {/* Global Chat Button */}
-                            <div 
-                                onClick={() => setActiveChannelId('global')}
-                                className={`channel-item flex items-center px-2 py-2 mb-2 rounded cursor-pointer ${activeChannelId === 'global' ? 'active' : 'text-gray-400'}`}
-                            >
-                                <div className="w-8 h-8 rounded-full bg-[#5865f2] flex items-center justify-center mr-3 text-white">
-                                    <i className="fas fa-globe"></i>
-                                </div>
-                                <span className="font-bold">Global Chat</span>
-                            </div>
-
-                            <div className="flex items-center justify-between px-2 mt-4 mb-2">
-                                <span className="text-xs font-bold text-gray-400 hover:text-gray-300 uppercase">Direct Messages</span>
-                                <i className="fas fa-plus text-gray-400 hover:text-white text-xs cursor-pointer"></i>
-                            </div>
-
-                            {/* DM List */}
-                            {otherUsers.map(u => {
-                                const dmId = getDmId(u.uid);
-                                const isActive = activeChannelId === dmId;
-                                const { color, icon } = STATUS_MAP[u.status] || STATUS_MAP.online;
-                                
-                                return (
-                                    <div 
-                                        key={u.uid} 
-                                        onClick={() => setActiveChannelId(dmId)}
-                                        className={`channel-item flex items-center p-2 rounded mb-1 cursor-pointer ${isActive ? 'active' : 'text-gray-400'}`}
-                                    >
-                                        <div className="relative mr-3">
-                                            <img src={u.photoURL || "https://cdn.discordapp.com/embed/avatars/0.png"} className="w-8 h-8 rounded-full object-cover" />
-                                            <div className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 ${color} border-[3px] border-[#2f3136] rounded-full flex items-center justify-center`}>
-                                            </div>
-                                        </div>
-                                        <div className="overflow-hidden">
-                                            <div className={`font-medium truncate ${isActive ? 'text-white' : ''}`}>{u.displayName}</div>
-                                            <div className="text-[10px] truncate opacity-60">{u.status}</div>
-                                        </div>
-                                    </div>
-                                );
-                            })}
+                            <div onClick={() => setActiveChannelId('global')} className={`channel-item flex items-center px-2 py-2 mb-2 rounded cursor-pointer ${activeChannelId === 'global' ? 'active' : 'text-gray-400'}`}><div className="w-8 h-8 rounded-full bg-[#5865f2] flex items-center justify-center mr-3 text-white relative"><i className="fas fa-globe"></i>{unreadMap['global'] && <div className="notification-dot" style={{bottom: '-2px', right: '-2px', border:'2px solid #2f3136'}}></div>}</div><span className={`font-bold ${unreadMap['global'] ? 'text-white' : ''}`}>Global Chat</span>{unreadMap['global'] && <span className="notification-badge">NEW</span>}</div>
+                            <div className="flex items-center justify-between px-2 mt-4 mb-2"><span className="text-xs font-bold text-gray-400 hover:text-gray-300 uppercase">Direct Messages</span><i className="fas fa-plus text-gray-400 hover:text-white text-xs cursor-pointer"></i></div>
+                            {otherUsers.map(u => { const dmId = getDmId(u.uid); const isActive = activeChannelId === dmId; const hasUnread = unreadMap[dmId]; const { color } = STATUS_MAP[u.status] || STATUS_MAP.online; return (<div key={u.uid} onClick={() => setActiveChannelId(dmId)} className={`channel-item flex items-center p-2 rounded mb-1 cursor-pointer ${isActive ? 'active' : 'text-gray-400'}`}><div className="relative mr-3"><img src={u.photoURL || "https://cdn.discordapp.com/embed/avatars/0.png"} className="w-8 h-8 rounded-full object-cover" /><div className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 ${color} border-[3px] border-[#2f3136] rounded-full flex items-center justify-center`}></div>{hasUnread && <div className="notification-dot"></div>}</div><div className="overflow-hidden flex-1"><div className={`truncate ${isActive || hasUnread ? 'text-white font-bold' : 'font-medium'}`}>{u.displayName}</div><div className={`text-[10px] truncate ${hasUnread ? 'text-gray-200 font-semibold' : 'opacity-60'}`}>{u.status}</div></div></div>); })}
                         </div>
-
-                        {/* User Panel */}
                         <div className="discord-user-panel p-2 flex items-center justify-between shrink-0">
-                            <div className="flex items-center group cursor-pointer hover:bg-[#393c43] p-1 rounded -ml-1 pl-2 pr-4 transition-colors" onClick={() => setShowStatusSetter(!showStatusSetter)}>
-                                <div className="relative">
-                                    <img src={currentUserData.photoURL || "https://cdn.discordapp.com/embed/avatars/0.png"} className="w-8 h-8 rounded-full object-cover" />
-                                    <div className={`absolute bottom-0 right-0 w-3 h-3 ${STATUS_MAP[currentUserData.status]?.color} border-2 border-[#292b2f] rounded-full`}></div>
-                                </div>
-                                <div className="ml-2">
-                                    <div className="text-sm font-bold truncate w-20">{currentUserData.displayName || user.displayName}</div>
-                                    <div className="text-xs text-gray-400">#{user.uid.slice(0,4)}</div>
-                                </div>
-                            </div>
+                            <div className="flex items-center group cursor-pointer hover:bg-[#393c43] p-1 rounded -ml-1 pl-2 pr-4 transition-colors" onClick={() => setShowStatusSetter(!showStatusSetter)}><div className="relative"><img src={currentUserData.photoURL || "https://cdn.discordapp.com/embed/avatars/0.png"} className="w-8 h-8 rounded-full object-cover" /><div className={`absolute bottom-0 right-0 w-3 h-3 ${STATUS_MAP[currentUserData.status]?.color} border-2 border-[#292b2f] rounded-full`}></div></div><div className="ml-2"><div className="text-sm font-bold truncate w-20">{currentUserData.displayName || user.displayName}</div><div className="text-xs text-gray-400">#{user.uid.slice(0,4)}</div></div></div>
                             {showStatusSetter && <StatusSetter currentStatus={currentUserData.status} onSelectStatus={updateStatus} onClose={() => setShowStatusSetter(false)} />}
-                            <div className="flex">
-                                <button className="w-8 h-8 flex items-center justify-center rounded hover:bg-[#393c43] text-gray-400 hover:text-white" onClick={() => setShowSettings(true)}>
-                                    <i className="fas fa-cog text-sm"></i>
-                                </button>
-                                <button className="w-8 h-8 flex items-center justify-center rounded hover:bg-[#393c43] text-gray-400 hover:text-white" onClick={() => signOut(auth)}>
-                                    <i className="fas fa-sign-out-alt text-sm"></i>
-                                </button>
-                            </div>
+                            <div className="flex"><button className="w-8 h-8 flex items-center justify-center rounded hover:bg-[#393c43] text-gray-400 hover:text-white" onClick={() => setShowSettings(true)}><i className="fas fa-cog text-sm"></i></button><button className="w-8 h-8 flex items-center justify-center rounded hover:bg-[#393c43] text-gray-400 hover:text-white" onClick={() => signOut(auth)}><i className="fas fa-sign-out-alt text-sm"></i></button></div>
                         </div>
                     </div>
 
-                    {/* MAIN CHAT AREA */}
-                    <div className="flex-1 flex flex-col bg-[#36393f] min-w-0">
-                        {/* Header */}
+                    <div className="flex-1 flex flex-col bg-[#36393f] min-w-0 relative">
                         <div className="h-12 discord-header flex items-center px-4 shrink-0 shadow-sm z-10">
-                            <i className={`${channelIcon} text-gray-400 text-xl mr-3`}></i>
-                            <span className="font-bold text-white mr-auto">{channelName}</span>
+                            <i className={`${channelIcon} text-gray-400 text-xl mr-3`}></i><span className="font-bold text-white mr-auto">{channelName}</span>
                             <div className="flex items-center space-x-4 text-gray-400 text-xl">
-                                <i className="fas fa-phone hover:text-white cursor-pointer hidden sm:block"></i>
-                                <i className="fas fa-video hover:text-white cursor-pointer hidden sm:block"></i>
-                                <i className="fas fa-user-friends hover:text-white cursor-pointer"></i>
-                                <div className="bg-[#202225] flex items-center px-2 py-1 rounded text-sm w-36 transition-all focus-within:w-56">
-                                    <input type="text" placeholder="Search" className="bg-transparent text-gray-200 w-full focus:outline-none placeholder-gray-500" />
-                                    <i className="fas fa-search text-xs ml-1"></i>
-                                </div>
+                                {activeChannelId !== 'global' && (<><i className="fas fa-phone hover:text-white cursor-pointer hidden sm:block" onClick={() => startCall('voice')}></i><i className="fas fa-video hover:text-white cursor-pointer" onClick={() => startCall('video')}></i></>)}
+                                <i className="fas fa-user-friends hover:text-white cursor-pointer hidden sm:block"></i>
+                                <div className="bg-[#202225] flex items-center px-2 py-1 rounded text-sm w-36 transition-all focus-within:w-56"><input type="text" placeholder="Search" className="bg-transparent text-gray-200 w-full focus:outline-none placeholder-gray-500" /><i className="fas fa-search text-xs ml-1"></i></div>
                             </div>
                         </div>
 
-                        {/* Messages */}
-                        <div className="flex-1 overflow-y-auto p-4 space-y-1 custom-scrollbar">
-                            {messages.length === 0 && (
-                                <div className="mt-10 text-center">
-                                    <div className="w-20 h-20 bg-[#4f545c] rounded-full mx-auto mb-4 flex items-center justify-center text-4xl text-white">
-                                        <i className={channelIcon}></i>
-                                    </div>
-                                    <h3 className="text-3xl font-bold text-white mb-2">Welcome to {channelName}!</h3>
-                                    <p className="text-gray-400">This is the start of your conversation.</p>
-                                </div>
-                            )}
-
-                            {messages.map((msg, i) => {
-                                const prev = messages[i-1];
-                                const isSame = prev && prev.uid === msg.uid && (msg.createdAt?.seconds - prev.createdAt?.seconds < 300);
-                                return (
-                                    <div key={msg.id || i} className={`flex pr-4 py-0.5 message-group group ${isSame ? 'mt-0' : 'mt-4'} hover:bg-[#32353b]`}>
-                                        <div className="w-[50px] shrink-0 flex justify-center cursor-pointer">
-                                            {!isSame ? <img src={msg.photoURL} className="w-10 h-10 rounded-full object-cover mt-0.5 hover:opacity-80" /> : <span className="text-[10px] text-gray-400 hidden group-hover:block mt-1.5">{msg.createdAt?.toDate().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>}
-                                        </div>
-                                        <div className="flex-1 min-w-0">
-                                            {!isSame && (
-                                                <div className="flex items-center">
-                                                    <span className="font-medium text-white mr-2 hover:underline cursor-pointer">{msg.displayName}</span>
-                                                    <span className="text-xs text-gray-400 mt-0.5">{formatDate(msg.createdAt)}</span>
+                        {callType ? (
+                            <CallInterface channelId={activeChannelId} displayName={currentUserData.displayName || user.displayName} userAvatar={currentUserData.photoURL} isVideo={callType === 'video'} onLeave={handleHangup} />
+                        ) : (
+                            <>
+                                <div className="flex-1 overflow-y-auto p-4 space-y-1 custom-scrollbar">
+                                    {messages.length === 0 && <div className="mt-10 text-center"><div className="w-20 h-20 bg-[#4f545c] rounded-full mx-auto mb-4 flex items-center justify-center text-4xl text-white"><i className={channelIcon}></i></div><h3 className="text-3xl font-bold text-white mb-2">Welcome to {channelName}!</h3><p className="text-gray-400">This is the start of your conversation.</p></div>}
+                                    {messages.map((msg, i) => {
+                                        const prev = messages[i-1];
+                                        const isSame = prev && prev.uid === msg.uid && (msg.createdAt?.seconds - prev.createdAt?.seconds < 300);
+                                        const isGift = msg.text && msg.text.includes("discord.gift");
+                                        return (
+                                            <div key={msg.id || i} className={`flex pr-4 py-0.5 message-group group ${isSame ? 'mt-0' : 'mt-4'} hover:bg-[#32353b]`}>
+                                                <div className="w-[50px] shrink-0 flex justify-center cursor-pointer">
+                                                    {!isSame ? <img src={msg.photoURL} className="w-10 h-10 rounded-full object-cover mt-0.5 hover:opacity-80" /> : <span className="text-[10px] text-gray-400 hidden group-hover:block mt-1.5">{msg.createdAt?.toDate().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>}
                                                 </div>
-                                            )}
-                                            <div className="text-gray-300 leading-snug">
-                                                {msg.imageUrl ? <img src={msg.imageUrl} className="max-w-md rounded-lg mt-1" /> : (msg.text.includes("media.tenor.com") ? <img src={msg.text} className="max-w-xs rounded-lg mt-1" /> : msg.text)}
+                                                <div className="flex-1 min-w-0">
+                                                    {!isSame && <div className="flex items-center"><span className="font-medium text-white mr-2 hover:underline cursor-pointer">{msg.displayName}</span><span className="text-xs text-gray-400 mt-0.5">{formatDate(msg.createdAt)}</span></div>}
+                                                    <div className="text-gray-300 leading-snug">
+                                                        {msg.imageUrl ? <img src={msg.imageUrl} className="max-w-md rounded-lg mt-1" /> 
+                                                        : (isGift ? <div className="bg-[#2f3136] p-4 rounded w-64 mt-2 border border-[#202225]"><h4 className="text-sm font-bold text-[#b9bbbe] uppercase mb-2">You received a gift!</h4><a href={msg.text} target="_blank" className="gift-link font-bold text-white block bg-[#5865f2] text-center p-2 rounded hover:bg-[#4752c4]">Accept Gift</a></div>
+                                                        : (msg.text.includes("media.tenor.com") ? <img src={msg.text} className="max-w-xs rounded-lg mt-1" /> : msg.text))}
+                                                    </div>
+                                                </div>
                                             </div>
+                                        );
+                                    })}
+                                    <div ref={dummyEndRef}></div>
+                                </div>
+                                <div className="px-4 pb-6 pt-2 shrink-0">
+                                    <div className="discord-input flex items-center p-3 rounded-lg relative">
+                                        {showEmojiPicker && <EmojiPicker onSelect={(e) => { setNewMessage(prev => prev + e); setShowEmojiPicker(false); }} />}
+                                        <div className="bg-[#b9bbbe] hover:text-white text-[#2f3136] rounded-full w-6 h-6 flex items-center justify-center cursor-pointer mr-4" onClick={() => fileInputRef.current.click()}><i className="fas fa-plus text-xs font-bold"></i></div>
+                                        <input type="file" ref={fileInputRef} onChange={handleImageUpload} className="hidden" accept="image/*" />
+                                        <form onSubmit={sendMessage} className="flex-1"><input type="text" value={newMessage} onChange={e => setNewMessage(e.target.value)} placeholder={`Message ${activeChannelId === 'global' ? '#general' : '@'+channelName}`} className="w-full bg-transparent text-white focus:outline-none placeholder-gray-500" /></form>
+                                        <div className="flex items-center space-x-4 mx-2 text-[#b9bbbe]">
+                                            <div className="cursor-pointer hover:text-white relative" onClick={sendGift} title="Send Gift"><i className="fas fa-gift"></i></div>
+                                            <div className="cursor-pointer hover:text-white relative" onClick={() => setShowGifPicker(!showGifPicker)}><div className="border border-current rounded px-1 text-[10px] font-bold">GIF</div></div>
+                                            <i className="fas fa-smile hover:text-white cursor-pointer" onClick={() => setShowEmojiPicker(!showEmojiPicker)}></i>
+                                            <button onClick={sendMessage} className="hover:text-white cursor-pointer transform hover:scale-110 transition-transform"><i className="fas fa-paper-plane text-lg text-[#5865f2]"></i></button>
                                         </div>
+                                        {showGifPicker && <GifPicker onSelect={(url) => { sendMessage(null, url); setShowGifPicker(false); }} close={() => setShowGifPicker(false)} />}
                                     </div>
-                                );
-                            })}
-                            <div ref={dummyEndRef}></div>
-                        </div>
-
-                        {/* Input */}
-                        <div className="px-4 pb-6 pt-2 shrink-0">
-                            <div className="discord-input flex items-center p-3 rounded-lg">
-                                <div className="bg-[#b9bbbe] hover:text-white text-[#2f3136] rounded-full w-6 h-6 flex items-center justify-center cursor-pointer mr-4" onClick={() => fileInputRef.current.click()}>
-                                    <i className="fas fa-plus text-xs font-bold"></i>
                                 </div>
-                                <input type="file" ref={fileInputRef} onChange={handleImageUpload} className="hidden" accept="image/*" />
-                                <form onSubmit={sendMessage} className="flex-1">
-                                    <input type="text" value={newMessage} onChange={e => setNewMessage(e.target.value)} placeholder={`Message ${activeChannelId === 'global' ? '#general' : '@'+channelName}`} className="w-full bg-transparent text-white focus:outline-none placeholder-gray-500" />
-                                </form>
-                                <div className="flex items-center space-x-4 mx-2 text-[#b9bbbe]">
-                                    <i className="fas fa-gift hover:text-white cursor-pointer" onClick={() => setShowGifPicker(!showGifPicker)}></i>
-                                    <i className="fas fa-smile hover:text-white cursor-pointer"></i>
-                                </div>
-                                {showGifPicker && <GifPicker onSelect={(url) => { sendMessage(null, url); setShowGifPicker(false); }} close={() => setShowGifPicker(false)} />}
-                            </div>
-                        </div>
+                            </>
+                        )}
                     </div>
                 </div>
             );
